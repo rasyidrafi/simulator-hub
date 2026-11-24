@@ -27,8 +27,8 @@ test('standalone server: lifecycle, two clients, exclusive input and durable rev
     if (!child) return;
     child.kill(); await child.exited;
   }
-  async function boot() {
-    child = Bun.spawn([process.execPath, 'server.mjs'], { env: {...process.env, PORT:'0', HUB_STATE_DIR:dir, HUB_ADMIN_TOKEN:admin, HUB_AVD:'Fixture', PATH:`${bin}:${process.env.PATH}`}, stdout:'pipe', stderr:'inherit' });
+  async function boot(autostart = '0') {
+    child = Bun.spawn([process.execPath, 'server.mjs'], { env: {...process.env, PORT:'0', HUB_STATE_DIR:dir, HUB_ADMIN_TOKEN:admin, HUB_AVD:'Fixture', HUB_AUTOSTART:autostart, PATH:`${bin}:${process.env.PATH}`}, stdout:'pipe', stderr:'inherit' });
     let banner = '';
     for await (const chunk of child.stdout) {
       banner += new TextDecoder().decode(chunk);
@@ -39,22 +39,25 @@ test('standalone server: lifecycle, two clients, exclusive input and durable rev
   async function ok(...args) { const r = await call(...args); assert.ok(r.ok, `${args[2] || 'GET'} ${args[0]}: ${r.status}`); return r; }
   await boot();
   assert.equal((await call('tokens',admin,'POST',{name:'x'.repeat(17000)})).status,413);
-  assert.equal((await call('device','invalid')).status,401);
+  assert.equal((await call('device')).status,404); // Removed singular status route.
   const clients = await Promise.all(['first','second'].map(async name => (await ok('tokens',admin,'POST',{name})).json()));
+  const devices = async token => (await (await ok('devices',token)).json()).devices;
+  assert.equal((await call('devices','invalid')).status,401);
+  assert.deepEqual(await devices(clients[0].token), [{id:'Fixture',name:'Fixture',status:'stopped',control:'free'}]);
   for (const text of [await (await ok('tokens')).text(), await readFile(join(dir,'tokens.json'),'utf8')]) {
     for (const client of clients) assert.ok(!text.includes(client.token));
   }
   assert.equal((await call('tokens',clients[0].token)).status,403);
   assert.equal((await call('device/start',clients[0].token,'POST')).status,403);
-  assert.equal((await (await ok('device')).json()).status,'stopped');
   await ok('device/start',admin,'POST');
-  for (let i=0;i<30 && (await (await ok('device')).json()).status !== 'ready';i++) await sleep(50);
+  for (let i=0;i<30 && (await devices(admin))[0].status !== 'ready';i++) await sleep(50);
   const png = Buffer.from(await (await ok('device/screenshot',clients[0].token)).arrayBuffer());
   assert.equal(png.subarray(0,8).toString('hex'),'89504e470d0a1a0a');
   const races = await Promise.all(clients.map(c => call('lease',c.token,'POST')));
   assert.equal(races.filter(r=>r.ok).length,1); assert.equal(races.find(r=>!r.ok).status,409);
   const idx = races.findIndex(r=>r.ok), owner = clients[idx], other = clients[1-idx];
   const lease = (await races[idx].json()).id;
+  assert.deepEqual(await devices(other.token), [{id:'Fixture',name:'Fixture',status:'ready',control:'in_use'}]);
   const input = {type:'tap',x:10,y:20};
   assert.ok(!(await call('device/input',other.token,'POST',input,lease)).ok);
   assert.ok(!(await call('lease',other.token,'DELETE',undefined,lease)).ok);
@@ -88,5 +91,10 @@ test('standalone server: lifecycle, two clients, exclusive input and durable rev
   assert.equal(await readFile(join(dir,'fixture-running'),'utf8'),'DifferentAVD');
   await writeFile(join(dir,'fixture-running'),'Fixture');
   await ok('device/stop',admin,'POST');
-  assert.equal((await (await ok('device')).json()).status,'stopped');
+  assert.equal((await devices(admin))[0].status,'stopped');
+  await stop(); await boot('1');
+  for (let i=0;i<40 && (await devices(other.token))[0].status !== 'ready';i++) await sleep(50);
+  assert.deepEqual(await devices(other.token), [{id:'Fixture',name:'Fixture',status:'ready',control:'free'}]);
+  await ok('device/stop',admin,'POST');
+  assert.equal((await devices(other.token))[0].status,'stopped');
 }, 60000);

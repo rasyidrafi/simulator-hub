@@ -28,7 +28,7 @@ On first install it generates an admin credential in `~/.config/simulator-hub/se
 - Start the user manager at boot without logging in: `loginctl enable-linger "$USER"` if permitted by the host.
 - Disable and stop: `systemctl --user disable --now simulator-hub.service`. Credentials and state remain on disk.
 
-Once the API is up, use `POST /v1/device/start` as admin and poll `GET /v1/device` until `ready`.
+For unattended startup, add `HUB_AUTOSTART=1` to `server.env` before starting or restarting the service. By default the API leaves the AVD stopped. Autostart attempts launch once per service start, leaves an already running managed AVD alone, and does not undo a manual stop. Poll `GET /v1/devices` for readiness; use `POST /v1/device/start` as admin to start manually.
 
 ## Connect from another laptop
 
@@ -49,7 +49,7 @@ Prefix all paths below with `/v1`. Send `Authorization: Bearer <token>` on every
 | `GET /me` | Discover the role of the current credential. |
 | `POST /tokens` | Admin: issue an operator token with `{"name":"openchamber"}`. Save the returned `token` immediately. |
 | `GET /tokens`, `DELETE /tokens/:id` | Admin: list token metadata or revoke a credential. |
-| `GET /device` | Check the configured emulator's status. |
+| `GET /devices` | Client/admin inventory: `{devices:[{id,name,status,control}]}`. Currently lists only `HUB_AVD`; `id` is its stable AVD name. `control` (`free`/`in_use`) describes the lease, separately from boot status. |
 | `POST /device/start`, `POST /device/stop` | Admin lifecycle controls. Poll status after starting; wait for `ready`. |
 | `GET /device/screenshot` | Fetch a PNG; request the next frame after the previous one completes. No lease needed. |
 | `POST /lease` | Acquire exclusive control; save the returned `id`. |

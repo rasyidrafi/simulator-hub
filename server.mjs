@@ -26,6 +26,10 @@ async function save(next) {
 const android = createAndroid(avd);
 let lease;
 let queue = Promise.resolve();
+// Attempt once per server startup, before queued requests. An explicit stop stays stopped.
+if (process.env.HUB_AUTOSTART === '1') {
+  queue = android.start().catch(error => console.error('AVD autostart failed:', error.message));
+}
 function fail(status, message) { const e = new Error(message); e.status = status; throw e; }
 function authenticate(req) {
   const match = /^Bearer (\S+)$/.exec(req.headers.get('authorization') || '');
@@ -79,7 +83,10 @@ async function handle(req, path, parsedBody) {
     if (lease?.owner === tokenMatch[1]) lease = undefined;
     return json(200, { ok: true });
   }
-  if (path === '/v1/device' && method === 'GET') return json(200, { status: await android.status() });
+  if (path === '/v1/devices' && method === 'GET') {
+    const status = await android.status();
+    return json(200, { devices: [{ id: avd, name: avd.replaceAll('_', ' '), status, control: activeLease() ? 'in_use' : 'free' }] });
+  }
   if (path === '/v1/device/start' && method === 'POST') { isAdmin(user); await android.start(); return json(200, { ok: true }); }
   if (path === '/v1/device/stop' && method === 'POST') { isAdmin(user); await android.stop(); return json(200, { ok: true }); }
   if (path === '/v1/device/screenshot' && method === 'GET') {

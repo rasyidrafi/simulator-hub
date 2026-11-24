@@ -8,7 +8,7 @@ async function request(path, method = 'GET', token = admin, body, lease) {
   const res = await fetch(base + path, { method, headers: { authorization:`Bearer ${token}`, ...(body && {'content-type':'application/json'}), ...(lease && {'x-lease-id':lease}) }, body: body && JSON.stringify(body), signal: AbortSignal.timeout(20000) });
   assert.ok(res.ok, `${method} ${path}: ${res.status}`); return res;
 }
-const status = async () => (await (await request('device')).json()).status;
+const status = async () => (await (await request('devices')).json()).devices[0].status;
 assert.equal(await status(), 'stopped', 'Use a stopped, disposable AVD reserved for this test');
 let started = false, operator;
 try {
