@@ -3,13 +3,13 @@ import { readFile } from 'node:fs/promises';
 
 const digest = 'a0f70b20aa4998fbf658c94118cd6c8dab6abbb0647a3bdab344d70bc1ebcbb8';
 // Only the dependency-free legacy routes are needed until live streaming is enabled.
-export async function openScrcpy() {
+export async function openScrcpy(serial) {
   const jar = await readFile(process.env.HUB_SCRCPY_SERVER);
   if (createHash('sha256').update(jar).digest('hex') !== digest) throw Error('Expected official scrcpy-server-v3.3.1');
   const [{AdbServerClient},{AdbServerNodeTcpConnector},{AdbScrcpyClient,AdbScrcpyOptions3_3_1}] = await Promise.all([
     import('@yume-chan/adb'), import('@yume-chan/adb-server-node-tcp'), import('@yume-chan/adb-scrcpy')]);
   const host = new AdbServerClient(new AdbServerNodeTcpConnector({host:'127.0.0.1',port:5037}));
-  const adb = await host.createAdb({serial:'emulator-5554'});
+  const adb = await host.createAdb({serial});
   const path = '/data/local/tmp/simulator-hub-scrcpy-3.3.1.jar';
   let client;
   try {

@@ -32,6 +32,21 @@ For unattended startup, add `HUB_AUTOSTART=1` to `server.env` before starting or
 
 ## Connect from another laptop
 
+### Register additional Android devices
+
+The default `HUB_AVD` remains on port 5554. Register additional devices by creating or editing `$HUB_STATE_DIR/devices.json` (a JSON array), then restart the Hub during an idle maintenance window. A restart interrupts existing sessions. Only explicitly registered targets are exposed; all existing authenticated Hub clients can access them. Remove an entry and restart to unregister it.
+
+```json
+[
+  {"id":"test-phone","name":"Test phone","type":"physical","serial":"SERIAL_FROM_ADB_DEVICES"},
+  {"id":"tablet","name":"Test tablet","type":"emulator","avd":"Existing_Tablet_AVD","port":5556}
+]
+```
+
+Use a unique stable API ID and ADB serial for each phone (USB debugging must be authorized). For an additional emulator, provision the named AVD first and reserve a unique even console port. Start additional AVDs explicitly; phone start/stop is not supported. An unplugged phone stays listed as `offline`.
+
+`GET /v1/devices` lists the registered targets. Pass `?device=<id>` on **every** device-specific request, including `/v1/live`, `/v1/lease`, `/v1/device/input`, and `/v1/device/screenshot`. Capture, input, and lease ownership are scoped to that ID. Omitting the selector preserves the default emulator; an unknown ID returns 404. Token management is global.
+
 ### HTTPS deployment: enable live video and touch
 
 Keep your **existing HTTPS domain and port**. The reverse proxy terminates TLS and forwards `/v1/live` WebSocket upgrades (HTTP/1.1, `Upgrade`, `Connection`, and `Authorization`) to the same loopback Hub as your REST requests. Preserve any existing external path prefix. No browser CORS changes, public ADB port, SSH tunnel, or second listener are required for this deployment. Use TLS with a certificate trusted by the OpenChamber server.

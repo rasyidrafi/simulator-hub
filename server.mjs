@@ -2,7 +2,8 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAndroid } from './android.mjs';
-import { createLive } from './live.mjs';
+import { loadDevices } from './registry.mjs';
+import { createLive, openScrcpy } from './live.mjs';
 
 export async function startHub(openCapture) {
 const { HUB_ADMIN_TOKEN: admin, HUB_STATE_DIR: dir, HUB_AVD: avd, PORT = '3000' } = process.env;
@@ -25,16 +26,20 @@ async function save(next) {
   await rename(tmp, statePath);
   tokens = next;
 }
-const android = createAndroid(avd);
+const targets = new Map();
+let queue = Promise.resolve();
+function ordered(fn){const work=queue.then(async()=>{for(const t of targets.values())await t.expire();return fn()});queue=work.catch(()=>{});return work}
+function target(device) {
+const {id:deviceId, name, serial} = device;
+const android = createAndroid(device);
 const peers=new Set();
 const sendPacket=(ws,packet)=>{if(ws.getBufferedAmount()>1500000||ws.sendBinary(packet)===0)ws.close(1013,'Viewer behind')};
-const live = createLive(openCapture,p=>{for(const ws of peers)sendPacket(ws,p)},()=>{for(const ws of peers)ws.close(1012,'Capture ended')},()=>ordered(async()=>{if(lease?.contact)await endLease()}));
+const live = createLive(()=> (openCapture || openScrcpy)(serial),p=>{for(const ws of peers)sendPacket(ws,p)},()=>{for(const ws of peers)ws.close(1012,'Capture ended')},()=>ordered(async()=>{if(lease?.contact)await endLease()}));
 // A contact belongs to one viewer, even when several panels share a client token.
 async function endLease(){const old=lease;lease=undefined;if(old?.contact&&live.running&&old.contact.epoch===live.epoch)try{await live.input({...old.contact,type:'cancel'})}catch{live.stop()}}
 let lease;
-let queue = Promise.resolve();
 // Attempt once per server startup, before queued requests. An explicit stop stays stopped.
-if (process.env.HUB_AUTOSTART === '1') {
+if (deviceId === avd && process.env.HUB_AUTOSTART === '1') {
   queue = android.start().catch(error => console.error('AVD autostart failed:', error.message));
 }
 function fail(status, message) { const e = new Error(message); e.status = status; throw e; }
@@ -87,21 +92,19 @@ async function handle(req, path, parsedBody) {
     isAdmin(user);
     if (!tokens.some(t => t.id === tokenMatch[1])) fail(404, 'Token not found');
     await save(tokens.filter(t => t.id !== tokenMatch[1]));
-    for(const ws of peers)if(ws.data.owner===tokenMatch[1]){peers.delete(ws);ws.close(1008,'Access revoked')}
-    if (lease?.owner === tokenMatch[1]) await endLease();
+    for(const t of targets.values()) await t.revoke(tokenMatch[1]);
     return json(200, { ok: true });
   }
   if (path === '/v1/devices' && method === 'GET') {
-    const status = await android.status();
-    return json(200, { devices: [{ id: avd, name: avd.replaceAll('_', ' '), status, control: activeLease() ? 'in_use' : 'free' }] });
+    return json(200, { devices: await Promise.all(Array.from(targets.values(), t => t.describe())) });
   }
   if (path === '/v1/device/start' && method === 'POST') { isAdmin(user); await android.start(); return json(200, { ok: true }); }
-  if (path === '/v1/device/stop' && method === 'POST') { isAdmin(user); await endLease();live.stop();await android.stop(); return json(200, { ok: true }); }
+  if (path === '/v1/device/stop' && method === 'POST') { isAdmin(user); if(device.type==='physical')fail(409,'Physical device lifecycle is not managed'); await endLease();live.stop();await android.stop(); return json(200, { ok: true }); }
   if(path==='/v1/live' && method==='GET'){
     if(!process.env.HUB_SCRCPY_SERVER)fail(404,'Live capture is not enabled');
     if(req.headers.get('upgrade')?.toLowerCase()!=='websocket')fail(426,'WebSocket required');
     if(await android.status()!=='ready')fail(409,'Device not ready');
-    if(!server.upgrade(req,{data:{owner:user.id,pending:0}}))fail(400,'Upgrade failed');return;
+    if(!server.upgrade(req,{data:{deviceId,owner:user.id,pending:0}}))fail(400,'Upgrade failed');return;
   }
   if (path === '/v1/device/screenshot' && method === 'GET') {
     if (await android.status() !== 'ready') fail(409, 'Device not ready');
@@ -127,7 +130,6 @@ async function handle(req, path, parsedBody) {
   }
   fail(404, 'Not found');
 }
-function ordered(fn){const work=queue.then(async()=>{if(lease&&!activeLease())await endLease();return fn()});queue=work.catch(()=>{});return work}
 async function touch(ws,e){
   if(!peers.has(ws)||!live.running||e.epoch!==live.epoch)fail(409,'Display changed');
   if(typeof e.gesture!=='string'||!/^[a-f0-9-]{36}$/.test(e.gesture))fail(400,'Invalid gesture');
@@ -140,26 +142,36 @@ async function touch(ws,e){
     await live.input(e);if(e.type==='up'||e.type==='cancel')lease=undefined;else{lease.contact=e;lease.expires=Date.now()+5000}
   }
 }
+return {handle,body,json, describe:async()=>({id:deviceId,name,status:await android.status(),control:activeLease()?'in_use':'free'}),
+  async revoke(owner){for(const ws of peers)if(ws.data.owner===owner){peers.delete(ws);ws.close(1008,'Access revoked')}if(lease?.owner===owner)await endLease()},
+  async expire(){if(lease&&!activeLease())await endLease()},
+  open(ws){peers.add(ws);for(const p of live.replay)sendPacket(ws,p);live.start().catch(()=>ws.close(1011,'Capture unavailable'))},
+  message(ws,message){if(++ws.data.pending>64){ws.close(1008,'Input backlog');return}void ordered(async()=>{let e;try{e=JSON.parse(message);await touch(ws,e);ws.send(JSON.stringify({id:e.id,ok:true}))}catch(err){ws.send(JSON.stringify({id:e?.id,ok:false,error:err.status?err.message:'Input failed'}))}finally{ws.data.pending--}})},
+  close(ws){peers.delete(ws);void ordered(async()=>{if(lease?.socket===ws)await endLease();if(!peers.size)live.stop()})}
+};
+}
+for(const device of await loadDevices(dir,avd))targets.set(device.id,target(device));
+const main = targets.get(avd);
 const server = Bun.serve({
   hostname: '127.0.0.1', port: Number(PORT), idleTimeout: 30, maxRequestBodySize: 16384,
   async fetch(req) {
     // Read request bodies outside the effects queue so slow clients cannot block it.
-    const path = new URL(req.url).pathname;
-    const parsedBody = req.method === 'POST' && ['/v1/tokens','/v1/device/input'].includes(path) ? await body(req) : {};
-    return ordered(()=>handle(req,path,parsedBody));
+    const url = new URL(req.url), path = url.pathname;
+    const t = targets.get(url.searchParams.get('device') ?? avd);
+    if(!t)return main.json(404,{error:'Unknown device'});
+    const parsedBody = req.method === 'POST' && ['/v1/tokens','/v1/device/input'].includes(path) ? await t.body(req) : {};
+    return ordered(()=>t.handle(req,path,parsedBody));
   },
   websocket:{maxPayloadLength:2048,backpressureLimit:2000000,closeOnBackpressureLimit:true,
-    open(ws){peers.add(ws);for(const p of live.replay)sendPacket(ws,p);live.start().catch(e=>{console.warn('Live capture unavailable:',e.message);ws.close(1011,'Capture unavailable')})},
-    message(ws,message){if(++ws.data.pending>64){ws.close(1008,'Input backlog');return}void ordered(async()=>{let e;try{e=JSON.parse(message);await touch(ws,e);ws.send(JSON.stringify({id:e.id,ok:true}))}catch(err){ws.send(JSON.stringify({id:e?.id,ok:false,error:err.status?err.message:'Input failed'}))}finally{ws.data.pending--}})},
-    close(ws){peers.delete(ws);void ordered(async()=>{if(lease?.socket===ws)await endLease();if(!peers.size)live.stop()})}
+    open(ws){targets.get(ws.data.deviceId).open(ws)},message(ws,m){targets.get(ws.data.deviceId).message(ws,m)},close(ws){targets.get(ws.data.deviceId).close(ws)}
   },
   error(error) {
     if (!error.status) console.error(error);
-    return json(error.status || 500, { error: error.status ? error.message : 'Internal server error' });
+    return main.json(error.status || 500, { error: error.status ? error.message : 'Internal server error' });
   }
 });
 console.log(`Simulator Hub listening on ${server.url.origin}`);
-setInterval(()=>{if(lease&&!activeLease())queue=queue.then(async()=>{if(lease&&!activeLease())await endLease()}).catch(console.error)},250).unref();
+setInterval(()=>void ordered(()=>{}).catch(console.error),250).unref();
 return server;
 }
 if(import.meta.main)await startHub();
