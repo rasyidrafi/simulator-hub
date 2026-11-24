@@ -16,6 +16,20 @@ bun run start
 
 Provision the admin secret through your service environment for repeat use. Protect it like a password: it can revoke credentials and stop the emulator. Give each client its own operator token instead of sharing the admin token. Keep credentials on the client backend, not in browser code or URLs.
 
+## Register as a Linux user service
+
+From this checkout, run `HUB_AVD=Pixel_API_35 bash scripts/install-service.sh` (replace the name with one from `emulator -list-avds`). Requires a working systemd user session, Bun, `adb`, `emulator`, and OpenSSL. The helper registers the **current checkout**; keep it and the resolved Bun executable in place.
+
+On first install it generates an admin credential in `~/.config/simulator-hub/server.env` (mode `0600`), sets port 8787, and enables and starts the API with `NODE_ENV=production`. It reuses existing configuration, does not overwrite a different unit or restart a running service, and does not boot an AVD. If your SDK needs an explicit location, set `ANDROID_HOME` in `server.env`. Config and unit files respect `XDG_CONFIG_HOME`.
+
+- Status: `systemctl --user status simulator-hub.service`
+- Logs: `journalctl --user -u simulator-hub.service -f`
+- Apply server or environment changes: `systemctl --user restart simulator-hub.service` (interrupts active sessions).
+- Start the user manager at boot without logging in: `loginctl enable-linger "$USER"` if permitted by the host.
+- Disable and stop: `systemctl --user disable --now simulator-hub.service`. Credentials and state remain on disk.
+
+Once the API is up, use `POST /v1/device/start` as admin and poll `GET /v1/device` until `ready`.
+
 ## Connect from another laptop
 
 Keep the service on loopback. On the client laptop, open an encrypted SSH tunnel and leave it running:
