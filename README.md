@@ -32,6 +32,25 @@ For unattended startup, add `HUB_AUTOSTART=1` to `server.env` before starting or
 
 ## Connect from another laptop
 
+### HTTPS deployment: enable live video and touch
+
+Keep your **existing HTTPS domain and port**. The reverse proxy terminates TLS and forwards `/v1/live` WebSocket upgrades (HTTP/1.1, `Upgrade`, `Connection`, and `Authorization`) to the same loopback Hub as your REST requests. Preserve any existing external path prefix. No browser CORS changes, public ADB port, SSH tunnel, or second listener are required for this deployment. Use TLS with a certificate trusted by the OpenChamber server.
+
+On the emulator host, from the updated checkout:
+
+```sh
+bun install --frozen-lockfile
+mkdir -p "$HOME/.local/share/simulator-hub"
+curl -fL https://github.com/Genymobile/scrcpy/releases/download/v3.3.1/scrcpy-server-v3.3.1 -o "$HOME/.local/share/simulator-hub/scrcpy-server-v3.3.1"
+printf '%s  %s\n' a0f70b20aa4998fbf658c94118cd6c8dab6abbb0647a3bdab344d70bc1ebcbb8 "$HOME/.local/share/simulator-hub/scrcpy-server-v3.3.1" | sha256sum -c -
+```
+
+Set `HUB_SCRCPY_SERVER` in the existing service environment (`~/.config/simulator-hub/server.env` for the supplied user service) to the **absolute file path**, not a shell expression. Restart `simulator-hub.service` after installing. Do not replace existing tokens, `HUB_AVD`, or state directory. The Hub verifies the pinned server hash, uses local ADB on port 5037 and reserves `emulator-5554` for the configured AVD. No desktop scrcpy client is required. Leave this variable unset to use PNG/REST only.
+
+Open the Simulator rail with a ready device. A live session should show a moving picture and respond to a drag before pointer-up. Check your reverse proxy log for a `101` on `/v1/live`; repeated PNG requests without an upgrade indicate fallback. Close the last viewer to release capture. To roll back, unset `HUB_SCRCPY_SERVER` and restart the Hub; the original REST endpoints remain available.
+
+### Optional tunnel for deployments without HTTPS
+
 Keep the service on loopback. On the client laptop, open an encrypted SSH tunnel and leave it running:
 
 ```sh
