@@ -1,0 +1,14 @@
+# Machine-local tools and dependencies
+.agents/skills/ask-bun
+node_modules/
+
+# Local credentials and token state
+.env
+.env.*
+*.env
+*.token
+tokens.json
+tokens.*.tmp
+*-token.json
+*.pem
+*.key
